@@ -1,0 +1,96 @@
+name: render
+run-name: render (${{ inputs.shards }} shards)
+
+# Manual trigger only: no pull_request triggers, so forks never see the RENDER_KEY secret.
+# The job branch holds one encrypted file (bundle.tar.gz.enc); everything that leaves a runner is encrypted too.
+on:
+  workflow_dispatch:
+    inputs:
+      shards: { description: "number of parallel shards", default: "10" }
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  PLAYWRIGHT_VERSION: "1.60.0"   # same as the Mac, so the same Chromium build
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"   # same major as the Mac (ffmpeg 9.0)
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env: { N: "${{ inputs.shards }}" }
+        run: echo "matrix=$(python3 -c 'import json, os; print(json.dumps(list(range(int(os.environ["N"])))))')" >> "$GITHUB_OUTPUT"
+
+  shard:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ env.PLAYWRIGHT_VERSION }}-${{ runner.os }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+      - name: tools
+        run: bash farm/run.sh tools
+      - name: render
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ inputs.shards }}
+        run: bash farm/run.sh shard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.shard }}
+          path: ${{ runner.temp }}/enc/chunk_*.tar.enc
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  join:
+    needs: shard
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+      - name: ffmpeg
+        run: bash farm/run.sh ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          path: ${{ runner.temp }}/parts
+          merge-multiple: true
+      - name: join and encode
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          SHARDS: ${{ inputs.shards }}
+        run: bash farm/run.sh join
+      - uses: actions/upload-artifact@v4
+        with:
+          name: render
+          path: ${{ runner.temp }}/final/render.mp4.enc
+          retention-days: 1
+          compression-level: 0
+      - name: delete chunk artifacts
+        if: always()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          for id in $(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '.artifacts[] | select(.name | startswith("chunk-")) | .id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" >/dev/null
+          done
