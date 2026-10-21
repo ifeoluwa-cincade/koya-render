@@ -1,5 +1,5 @@
 # One shard of a cloud render. Mirrors the local renderer exactly:
-# Playwright Chromium, viewport 1920x1080, device scale SCALE, --force-color-profile=srgb --disable-lcd-text,
+# Playwright Chromium, viewport 1920x1080 (or the manifest's size, e.g. 1080x1920), device scale SCALE, --force-color-profile=srgb --disable-lcd-text,
 # waits for networkidle, fonts and image decode, render(i / fps), jpeg q95 per frame.
 # Then this shard's contiguous frame range is downscaled (Lanczos to 1920x1080, yuv420p) into a LOSSLESS ffv1 chunk.
 # The join job does the single libx264 crf 16 encode, so the output matches a one-pass local render.
@@ -18,6 +18,7 @@ scale, fps = float(M.get("scale") or 2), int(M.get("fps") or 60)
 rng = (M.get("range") or "").strip()
 outdir = pathlib.Path(sys.argv[4]).resolve()
 extra = (M.get("extra_args") or "").split()
+VW, VH = (int(v) for v in (M.get("size") or "1920x1080").split("x"))   # viewport in CSS px = output size (1080x1920 vertical)
 workers = int(os.environ.get("WORKERS") or os.cpu_count() or 2)
 frames = outdir / "frames"
 ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"] + extra
@@ -25,7 +26,7 @@ ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"] + extra
 
 def open_page(p):
     b = p.chromium.launch(args=ARGS)
-    pg = b.new_page(viewport={"width": 1920, "height": 1080}, device_scale_factor=scale)
+    pg = b.new_page(viewport={"width": VW, "height": VH}, device_scale_factor=scale)
     pg.goto(f"file://{page}?still=1")
     pg.wait_for_load_state("networkidle")
     pg.evaluate("document.fonts.ready.then(() => 1)")
@@ -73,7 +74,7 @@ if __name__ == "__main__":
         if miss: sys.exit(f"missing {len(miss)} frames, first {miss[0]}")
         t1 = time.time()
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-start_number", str(lo), "-i", str(frames / "%05d.jpg"),
-                        "-frames:v", str(hi - lo), "-vf", "scale=1920:1080:flags=lanczos", "-pix_fmt", "yuv420p",
+                        "-frames:v", str(hi - lo), "-vf", f"scale={VW}:{VH}:flags=lanczos", "-pix_fmt", "yuv420p",
                         "-c:v", "ffv1", "-level", "3", "-slices", "16", "-g", "1", str(outdir / f"chunk_{shard:03d}.nut")], check=True)
         meta["render_s"], meta["encode_s"] = round(t1 - t0), round(time.time() - t1)
     (outdir / f"meta_{shard:03d}.json").write_text(json.dumps(meta))
