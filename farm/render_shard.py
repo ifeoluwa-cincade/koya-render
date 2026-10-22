@@ -19,7 +19,7 @@ rng = (M.get("range") or "").strip()
 outdir = pathlib.Path(sys.argv[4]).resolve()
 extra = (M.get("extra_args") or "").split()
 VW, VH = (int(v) for v in (M.get("size") or "1920x1080").split("x"))   # viewport in CSS px = output size (1080x1920 vertical)
-workers = int(os.environ.get("WORKERS") or os.cpu_count() or 2)
+workers = int(M.get("workers") or os.environ.get("WORKERS") or os.cpu_count() or 2)   # heavy pages: 1-2 (each Chromium at 2x can take GBs)
 frames = outdir / "frames"
 ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"] + extra
 
