@@ -27,6 +27,7 @@ ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"] + extra
 def open_page(p):
     b = p.chromium.launch(args=ARGS)
     pg = b.new_page(viewport={"width": VW, "height": VH}, device_scale_factor=scale)
+    pg.set_default_timeout(300000)   # heavy frames (every plane on screen at 2x) can take over a minute on a runner; never give up at 30 s
     pg.goto(f"file://{page}?still=1")
     pg.wait_for_load_state("networkidle")
     pg.evaluate("document.fonts.ready.then(() => 1)")

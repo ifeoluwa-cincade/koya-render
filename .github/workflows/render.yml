@@ -29,9 +29,9 @@ jobs:
   shard:
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
-      fail-fast: true
+      fail-fast: false   # one slow/failed shard must not cancel the other 19; cloud_render.py re-runs failed shards
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
