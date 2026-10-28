@@ -26,16 +26,23 @@ SETTLE = any("window.READY" in f.read_text(errors="ignore") for f in pathlib.Pat
 
 
 def open_page(p):
-    b = p.chromium.launch(args=ARGS)
-    pg = b.new_page(viewport={"width": VW, "height": VH}, device_scale_factor=scale)
-    pg.set_default_timeout(300000)   # heavy frames (every plane on screen at 2x) can take over a minute on a runner; never give up at 30 s
-    pg.goto(f"file://{page}?still=1")
-    pg.wait_for_load_state("networkidle")
-    pg.evaluate("document.fonts.ready.then(() => 1)")
-    pg.wait_for_function("typeof render === 'function'")
-    if SETTLE: pg.wait_for_function("window.READY === true")   # pages that set READY (async setup, e.g. per-layer lookdev) finish it first
-    pg.evaluate("Promise.all([...document.images].map(i => i.decode ? i.decode().catch(() => 0) : 0))")
-    return b, pg
+    for attempt in range(3):   # Linux runners sometimes lose the page while it opens ("Execution context was destroyed"); reopen it
+        b = p.chromium.launch(args=ARGS)
+        pg = b.new_page(viewport={"width": VW, "height": VH}, device_scale_factor=scale)
+        pg.set_default_timeout(300000)   # heavy frames (every plane on screen at 2x) can take over a minute on a runner; never give up at 30 s
+        try:
+            pg.goto(f"file://{page}?still=1")
+            pg.wait_for_load_state("networkidle")
+            pg.evaluate("document.fonts.ready.then(() => 1)")
+            pg.wait_for_function("typeof render === 'function'")
+            if SETTLE: pg.wait_for_function("window.READY === true")   # pages that set READY (async setup, e.g. per-layer lookdev) finish it first
+            pg.evaluate("Promise.all([...document.images].map(i => i.decode ? i.decode().catch(() => 0) : 0))")
+            return b, pg
+        except Exception as e:
+            print(f"open_page attempt {attempt + 1} failed: {str(e).splitlines()[0]}", flush=True)
+            b.close()
+            if attempt == 2: raise
+            time.sleep(3)
 
 
 def work(k, lo, hi):
