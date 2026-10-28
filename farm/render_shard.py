@@ -22,6 +22,7 @@ VW, VH = (int(v) for v in (M.get("size") or "1920x1080").split("x"))   # viewpor
 workers = int(M.get("workers") or os.environ.get("WORKERS") or os.cpu_count() or 2)   # heavy pages: 1-2 (each Chromium at 2x can take GBs)
 frames = outdir / "frames"
 ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"] + extra
+SETTLE = any("window.READY" in f.read_text(errors="ignore") for f in pathlib.Path(page).parent.glob("*.js"))   # opt-in: only pages that signal READY
 
 
 def open_page(p):
@@ -32,6 +33,7 @@ def open_page(p):
     pg.wait_for_load_state("networkidle")
     pg.evaluate("document.fonts.ready.then(() => 1)")
     pg.wait_for_function("typeof render === 'function'")
+    if SETTLE: pg.wait_for_function("window.READY === true")   # pages that set READY (async setup, e.g. per-layer lookdev) finish it first
     pg.evaluate("Promise.all([...document.images].map(i => i.decode ? i.decode().catch(() => 0) : 0))")
     return b, pg
 
@@ -41,6 +43,9 @@ def work(k, lo, hi):
         b, pg = open_page(p)
         for i in range(lo + k, hi, workers):
             pg.evaluate(f"render({i / fps})")
+            if SETTLE:   # same as that page's local render.py: let layers paint, longer when new ones just came on (else half-drawn frames)
+                pg.wait_for_timeout(250)
+                if pg.evaluate("window.FRESH || 0"): pg.wait_for_timeout(250)
             pg.screenshot(path=str(frames / f"{i:05d}.jpg"), type="jpeg", quality=95)
         b.close()
 
