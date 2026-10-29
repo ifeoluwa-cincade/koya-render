@@ -1,0 +1,46 @@
+name: fetch
+run-name: fetch
+
+# Manual trigger only. The link list arrives encrypted (input "job"); downloads leave the runner encrypted.
+on:
+  workflow_dispatch:
+    inputs:
+      job: { description: "encrypted link list (base64)", required: true }
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: tools
+        run: |
+          python3 -m pip install -q --user -U yt-dlp
+          sudo apt-get -qq update >/dev/null && sudo apt-get -qq install -y ffmpeg >/dev/null
+      - name: fetch
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          JOB: ${{ inputs.job }}
+        run: |
+          set -e
+          umask 077; K="$RUNNER_TEMP/k"; printf '%s' "$RENDER_KEY" > "$K"
+          C="openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass file:$K"
+          echo "$JOB" | base64 -d | $C -d > "$RUNNER_TEMP/links.txt"
+          mkdir -p "$RUNNER_TEMP/dl" "$RUNNER_TEMP/enc"; cd "$RUNNER_TEMP/dl"; i=0; ok=0
+          while read -r url; do
+            [ -z "$url" ] && continue; i=$((i+1))
+            if ~/.local/bin/yt-dlp --no-warnings -q -f "bv*[height<=1080]+ba/b" --merge-output-format mp4 \
+                 --write-auto-subs --write-subs --sub-langs "en.*" --sub-format vtt -o "v$i.%(ext)s" "$url"; then ok=$((ok+1)); fi
+          done < "$RUNNER_TEMP/links.txt"
+          echo "downloaded $ok of $i"
+          tar -cf - . | $C -out "$RUNNER_TEMP/enc/fetch.tar.enc"
+          ls -la "$RUNNER_TEMP/enc" | tail -1 | awk '{print $5" bytes encrypted"}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fetch
+          path: ${{ runner.temp }}/enc/fetch.tar.enc
+          retention-days: 1
+          compression-level: 0
