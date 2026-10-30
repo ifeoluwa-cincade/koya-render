@@ -26,7 +26,11 @@ case "$1" in
   shard)
     [ -n "${RENDER_KEY:-}" ] || { echo "RENDER_KEY secret is not set"; exit 1; }
     W="$RUNNER_TEMP/w"; mkdir -p "$W" "$RUNNER_TEMP/out" "$RUNNER_TEMP/enc"
-    enc -d -in bundle.tar.gz.enc -out "$W/b.tgz"
+    # 30 Oct: the scene assembler (tools/scenemaker/assemble) uploads big bundles as small parts bundle.part_000, ...
+    # so a slow link retries piece by piece; join them back. Single-file jobs (cloud_render.py) are unchanged.
+    B=bundle.tar.gz.enc
+    if [ ! -f "$B" ] && ls bundle.part_* >/dev/null 2>&1; then cat bundle.part_* > "$W/b.enc"; B="$W/b.enc"; fi
+    enc -d -in "$B" -out "$W/b.tgz"; rm -f "$W/b.enc"
     tar xzf "$W/b.tgz" -C "$W"; rm "$W/b.tgz"
     PAGE=$(python3 -c "import json; print(json.load(open('$W/manifest.json'))['page'])")
     # mask anything derived from the bundle in case a stack trace prints it
