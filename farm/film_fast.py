@@ -245,7 +245,18 @@ def bench(M):
         OUT = R / v["name"]; OUT.mkdir()
         SPLIT = bool(v.get("split"))
         c0, i0 = cpu_now(); t1 = time.time()
-        if v.get("files"):   # today's path: film.py shard() inner loop, verbatim settings
+        if v.get("cold"):   # ground truth: a fresh browser for every sample frame (no render history at all)
+            from playwright.sync_api import sync_playwright
+            page = (B / M["scenes"][si]["page"]).resolve(); settle = has_settle(page)
+            args = BASE_ARGS + (M.get("extra_args") or "").split() + list(v.get("extra") or [])
+            st = []
+            with sync_playwright() as p:
+                for i in sorted(keep):
+                    b, pg = open_page(p, page, VW, VH, float(M["scale"]), args, settle)
+                    g = Grab(pg, fps, settle, "pw", VW, VH); (OUT / f"s_{i:05d}.jpg").write_bytes(g(i)); b.close()
+                    st.append(dict(frames=1, eval_s=g.t_eval, cap_s=g.t_cap))
+            enc_s, chain, outs = 0.0, None, []
+        elif v.get("files"):   # today's path: film.py shard() inner loop, verbatim settings
             from playwright.sync_api import sync_playwright
             frames = OUT / "frames"; frames.mkdir()
             page = (B / M["scenes"][si]["page"]).resolve(); settle = has_settle(page); nW = int(v["workers"])
@@ -301,6 +312,8 @@ def bench(M):
         print(f"{v['name']}: {r['wall_s']}s, {r['fps']} fps, eval {r['eval_ms']} ms, capture {r['cap_ms']} ms, cpu {r['cpu_busy']}", flush=True)
         for f in OUT.glob("*.mp4"): f.unlink()
     (ENC / "bench.enc").write_bytes(F.enc(None, None, data=json.dumps(rep).encode()))
+    tar = subprocess.run(["tar", "cf", "-", "-C", str(R), *[str(f.relative_to(R)) for f in sorted(R.glob("*/s_*.jpg"))]], capture_output=True, check=True).stdout
+    (ENC / "samples.enc").write_bytes(F.enc(None, None, data=tar))
 
 
 if __name__ == "__main__":
