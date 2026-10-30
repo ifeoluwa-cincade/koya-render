@@ -317,11 +317,74 @@ def bench(M):
     (ENC / "samples.enc").write_bytes(F.enc(None, None, data=tar))
 
 
+# ------------------------------------------------------------------ final (same commands as film.py final, run side by side)
+def final(M):
+    """film.py final with the independent steps overlapped: audio fetch + mix runs while the pieces are decrypted and
+    joined; final and WhatsApp are joined, muxed and encrypted in parallel. Every command and argument is film.py's, so
+    the files are byte-identical."""
+    from concurrent.futures import ThreadPoolExecutor
+    import re
+    from film_mix import mix_core, lufs
+    P = TMP / "parts"; J = TMP / "j"; A = TMP / "a"; Fd = TMP / "final"; AW = TMP / "aw"
+    for x in (J, A, Fd, AW): x.mkdir(parents=True, exist_ok=True)
+    want = sorted((si, lo, hi) for sh in M["shards"] for si, lo, hi in sh)
+    total = sum(hi - lo for _, lo, hi in want)
+
+    def audio():
+        au = M["audio"]; dest = {}
+        for n in [au.get("vo")] + (au.get("music") or {}).get("tracks", []) + [c["file"] for c in au.get("sfx", [])]:
+            if n: dest.setdefault(n, [A / n])
+        if dest: F.fetch_objects(dest.keys(), dest)
+        music = dict(au["music"], tracks=[str(A / n) for n in au["music"]["tracks"]]) if au.get("music") else None
+        sfx = [dict(c, file=str(A / c["file"])) for c in au.get("sfx", [])]
+        t0 = time.time()
+        rep = mix_core(str(A / au["vo"]) if au.get("vo") else None, music, sfx, total, int(M["fps"]), AW, AW / "mix.wav",
+                       M.get("target_lufs", -15.5), M.get("vo_offset", 0.0))
+        return rep, time.time() - t0
+
+    def untar(f):
+        subprocess.run(["tar", "xf", "-", "-C", str(J)], input=F.enc(None, None, decrypt=True, data=f.read_bytes()), check=True)
+
+    def count(f):
+        o = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets",
+                            "-of", "csv=p=0", str(f)], capture_output=True, text=True).stdout.strip()
+        m = re.match(r"\s*(\d+)", o); return int(m.group(1)) if m else -1
+
+    def join(tag):
+        lst = J / f"{tag}.txt"
+        lst.write_text("".join(f"file 'p_{si:03d}_{lo:06d}_{tag}.mp4'\n" for si, lo, hi in want))
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", "-an", str(J / f"{tag}_v.mp4")], check=True)
+        assert count(J / f"{tag}_v.mp4") == total, f"{tag}: frame count"
+
+    def mux(tag, ab):
+        out = J / f"{tag}.mp4"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(J / f"{tag}_v.mp4"), "-i", str(AW / "mix.wav"), "-map", "0:v", "-map", "1:a",
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", ab, "-movflags", "+faststart", str(out)], check=True)
+        F.enc(out, Fd / f"{tag}.mp4.enc")
+
+    t0 = time.time()
+    with ThreadPoolExecutor(6) as ex:
+        fa = ex.submit(audio)
+        list(ex.map(untar, sorted(P.glob("piece_*.enc"))))
+        t1 = time.time()
+        list(ex.map(join, ("final", "wa")))
+        t2 = time.time()
+        rep, mix_s = fa.result()
+        t3 = time.time()
+        list(ex.map(lambda x: mux(*x), (("final", "320k"), ("wa", "128k"))))
+        I, TP = lufs(J / "final.mp4")
+    rep = dict(frames=total, mix=rep, mix_s=round(mix_s), final_lufs=I, final_tp=TP,
+               bytes={t: (J / f"{t}.mp4").stat().st_size for t in ("final", "wa")},
+               final_steps=dict(untar_s=round(t1 - t0), join_s=round(t2 - t1), wait_audio_s=round(t3 - t2), mux_s=round(time.time() - t3)))
+    (Fd / "report.json.enc").write_bytes(F.enc(None, None, data=json.dumps(rep).encode()))
+    print(f"frames {total}, final {rep['bytes']['final'] // 1000000} MB, wa {rep['bytes']['wa'] // 1000000} MB, mix {mix_s:.0f}s, steps {rep['final_steps']}")
+
+
 if __name__ == "__main__":
     mode = sys.argv[1]
     try:
         M = F.manifest()
-        {"shard": lambda: shard(M, int(sys.argv[2])), "bench": lambda: bench(M)}[mode]()
+        {"shard": lambda: shard(M, int(sys.argv[2])), "bench": lambda: bench(M), "final": lambda: final(M)}[mode]()
     except SystemExit:
         raise
     except BaseException as e:

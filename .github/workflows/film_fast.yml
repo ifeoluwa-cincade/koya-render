@@ -1,7 +1,7 @@
 name: film_fast
 run-name: film fast (${{ inputs.shards }} shards)
 
-# Fast film path (30 Oct 2026, farm/film_fast.py shards; prep and final are film.py, unchanged): prep (asset cache) -> shards (render + encode pieces) -> final (join, mix, mux).
+# Fast film path (30 Oct 2026): prep is farm/film.py (unchanged); shards and final are farm/film_fast.py: prep (asset cache) -> shards (render + encode pieces) -> final (join, mix, mux).
 # Manual trigger only, so forks never see RENDER_KEY. The job branch holds one encrypted manifest (film.enc); assets live
 # encrypted in the `cache` branch; every artifact is encrypted. Logs print counts and timings only.
 on:
@@ -74,7 +74,7 @@ jobs:
         with: { pattern: "piece-*", path: "${{ runner.temp }}/parts", merge-multiple: true }
       - name: join mix encode
         env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}", GH_TOKEN: "${{ github.token }}" }
-        run: python3 farm/film.py final
+        run: python3 farm/film_fast.py final
       - uses: actions/upload-artifact@v4
         with: { name: final, path: "${{ runner.temp }}/final/final.mp4.enc", retention-days: 3, compression-level: 0 }
       - uses: actions/upload-artifact@v4
