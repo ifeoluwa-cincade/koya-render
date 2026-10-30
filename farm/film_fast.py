@@ -239,7 +239,8 @@ def bench(M):
     W = TMP / "w"; B = W / "bundle"; R = TMP / "bench"; R.mkdir(parents=True, exist_ok=True)
     t0 = time.time(); na = fetch_scenes(M, [si], B); fetch_s = time.time() - t0
     fps, VW, VH = int(M["fps"]), *(int(v) for v in M["size"].split("x"))
-    rep = dict(cpus=os.cpu_count(), fetch_s=round(fetch_s, 1), assets=na, frames=hi - lo, variants=[])
+    cpu_model = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), "?")
+    rep = dict(cpus=os.cpu_count(), cpu_model=cpu_model, fetch_s=round(fetch_s, 1), assets=na, frames=hi - lo, variants=[])
     print(f"bench: {hi - lo} frames, {na} assets in {fetch_s:.0f}s, {os.cpu_count()} cpus", flush=True)
     for v in Bn["variants"]:
         OUT = R / v["name"]; OUT.mkdir()
