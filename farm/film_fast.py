@@ -36,7 +36,7 @@ def open_page(p, page, VW, VH, scale, args, settle):
         try:
             pg.goto(f"file://{page}?still=1"); pg.wait_for_load_state("networkidle")
             pg.evaluate("document.fonts.ready.then(() => 1)"); pg.wait_for_function("typeof render === 'function'")
-            if settle: pg.wait_for_function("window.READY === true")
+            if settle or SETTLE_OVERRIDE is not None: pg.wait_for_function("window.READY === true")
             pg.evaluate("Promise.all([...document.images].map(i => i.decode ? i.decode().catch(() => 0) : 0))")
             return b, pg
         except Exception:
