@@ -10,7 +10,7 @@
 # c/<name>/n with the part count. Rendering mirrors farm/render_shard.py exactly (same Chromium flags, waits, jpeg q95).
 # Logs stay neutral (the repo is public): counts and timings only. On an error the details go into an encrypted
 # err artifact for the Mac; the log only says which step failed.
-import json, os, pathlib, subprocess, sys, time, traceback, hashlib
+import json, os, re, pathlib, subprocess, sys, time, traceback, hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "")
@@ -198,7 +198,7 @@ def final(M):
     def count(f):
         o = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets",
                             "-of", "csv=p=0", str(f)], capture_output=True, text=True).stdout.strip()
-        return int(o) if o.isdigit() else -1
+        m = re.match(r"\s*(\d+)", o); return int(m.group(1)) if m else -1   # ffprobe 9 csv can add a trailing comma
     for tag in ("final", "wa"):
         lst = J / f"{tag}.txt"
         lst.write_text("".join(f"file 'p_{si:03d}_{lo:06d}_{tag}.mp4'\n" for si, lo, hi in want))
