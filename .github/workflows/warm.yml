@@ -1,0 +1,45 @@
+name: warm
+run-name: warm worker
+
+# Always-awake worker for small jobs (stills, short clips). Manual trigger only (plus its own hand-over), so forks never
+# see RENDER_KEY. Jobs arrive as encrypted blobs on branches warm/<id>; results go back encrypted on done/<id>.
+# One worker at a time: a hand-over run queues behind the current one and starts the moment it exits.
+on:
+  workflow_dispatch:
+    inputs:
+      idle_minutes: { description: "exit after this long with no jobs", default: "120" }
+
+concurrency:
+  group: warm
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  PLAYWRIGHT_VERSION: "1.60.0"
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"
+
+jobs:
+  worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 358
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ env.PLAYWRIGHT_VERSION }}-${{ runner.os }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+      - name: tools
+        run: bash farm/run.sh tools
+      - name: serve
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          IDLE_MINUTES: ${{ inputs.idle_minutes }}
+        run: bash farm/run.sh warm

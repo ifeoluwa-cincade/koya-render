@@ -56,5 +56,8 @@ EOF
     exp=$(cat expected); echo "frames: got $got expected $exp"; [ "$got" = "$exp" ]
     enc -in render.mp4 -out "$RUNNER_TEMP/final/render.mp4.enc"
     cd /; rm -rf "$J" "$P" ;;
+  warm)
+    [ -n "${RENDER_KEY:-}" ] || { echo "RENDER_KEY secret is not set"; exit 1; }
+    python3 farm/warm_worker.py ;;
   *) echo "unknown step"; exit 1 ;;
 esac
