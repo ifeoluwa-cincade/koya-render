@@ -19,8 +19,12 @@ TMP, ENC = F.TMP, F.ENC
 BASE_ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"]
 
 
+SETTLE_OVERRIDE = None   # bench only: force the settle rule on or off for every variant
+
+
 def has_settle(page):
     """Same rule as film.py: the 250 ms settle waits are opt-in for pages whose own folder has a script setting READY."""
+    if SETTLE_OVERRIDE is not None: return SETTLE_OVERRIDE
     return any("window.READY" in f.read_text(errors="ignore") for f in page.parent.glob("*.js"))
 
 
@@ -204,7 +208,9 @@ def bench(M):
     """M["bench"] = {"scene": si, "lo": a, "hi": b, "keep": [frames], "variants": [{name, workers, mode, fast, pieces, extra,
     files}]}. files=True is film.py's exact path (interleaved workers, page.screenshot to jpeg files, two-pass encode).
     Every variant keeps the same sample frames; the report compares them pixel by pixel with the first variant."""
-    Bn = M["bench"]; si, lo, hi = Bn["scene"], Bn["lo"], Bn["hi"]; keep = set(Bn.get("keep") or [])
+    global SETTLE_OVERRIDE
+    Bn = M["bench"]; SETTLE_OVERRIDE = Bn.get("settle")
+    si, lo, hi = Bn["scene"], Bn["lo"], Bn["hi"]; keep = set(Bn.get("keep") or [])
     W = TMP / "w"; B = W / "bundle"; R = TMP / "bench"; R.mkdir(parents=True, exist_ok=True)
     t0 = time.time(); na = fetch_scenes(M, [si], B); fetch_s = time.time() - t0
     fps, VW, VH = int(M["fps"]), *(int(v) for v in M["size"].split("x"))
