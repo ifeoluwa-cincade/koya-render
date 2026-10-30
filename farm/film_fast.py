@@ -19,7 +19,8 @@ TMP, ENC = F.TMP, F.ENC
 BASE_ARGS = ["--force-color-profile=srgb", "--disable-lcd-text"]
 
 
-SETTLE_OVERRIDE = None   # bench only: force the settle rule on or off for every variant
+SETTLE_OVERRIDE = None
+SPLIT = False   # bench only   # bench only: force the settle rule on or off for every variant
 
 
 def has_settle(page):
@@ -71,15 +72,40 @@ class Grab:
         return data
 
 
-def ff_stream(M, fps, VW, VH, out_final, out_wa):
-    """One ffmpeg: jpeg frames on stdin -> the same Lanczos scale + yuv420p as film.py -> final and WhatsApp x264 pieces."""
-    q = [("final", M["final"], out_final), ("wa", M["wa"], out_wa)]
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe", "-c:v", "mjpeg", "-framerate", str(fps), "-i", "-",
-           "-filter_complex", f"[0:v]scale={VW}:{VH}:flags=lanczos,format=yuv420p,split=2[a][b]"]
-    for (tag, s, out), lab in zip(q, ("[a]", "[b]")):
-        cmd += ["-map", lab, "-c:v", "libx264", "-r", str(fps), "-preset", s["preset"], "-b:v", s["b"], "-maxrate", s["maxrate"],
-                "-bufsize", s["bufsize"], "-g", str(2 * fps), str(out)]
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE)
+class FFExact:
+    """film.py's exact encode commands (same -vf scale + -pix_fmt yuv420p + x264 args), fed jpegs on stdin instead of
+    files: one ffmpeg per output, both get the same bytes."""
+    def __init__(self, M, fps, VW, VH, out_final, out_wa, n):
+        src = ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe", "-c:v", "mjpeg", "-framerate", str(fps), "-i", "-",
+               "-frames:v", str(n), "-vf", f"scale={VW}:{VH}:flags=lanczos", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-r", str(fps)]
+        self.ps = [subprocess.Popen(src + ["-preset", q["preset"], "-b:v", q["b"], "-maxrate", q["maxrate"], "-bufsize", q["bufsize"],
+                                           "-g", str(2 * fps), str(out)], stdin=subprocess.PIPE)
+                   for q, out in ((M["final"], out_final), (M["wa"], out_wa))]
+
+    def write(self, data):
+        for p in self.ps: p.stdin.write(data)
+
+    def close(self):
+        for p in self.ps: p.stdin.close()
+        return max(p.wait() for p in self.ps)
+
+    def kill(self):
+        for p in self.ps: p.kill()
+
+
+class FFSplit(FFExact):
+    """One decode, split to both encoders (bench only: not byte-identical to film.py's encode)."""
+    def __init__(self, M, fps, VW, VH, out_final, out_wa, n):
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe", "-c:v", "mjpeg", "-framerate", str(fps), "-i", "-",
+               "-filter_complex", f"[0:v]scale={VW}:{VH}:flags=lanczos,format=yuv420p,split=2[a][b]"]
+        for (s, out), lab in zip(((M["final"], out_final), (M["wa"], out_wa)), ("[a]", "[b]")):
+            cmd += ["-map", lab, "-c:v", "libx264", "-r", str(fps), "-preset", s["preset"], "-b:v", s["b"], "-maxrate", s["maxrate"],
+                    "-bufsize", s["bufsize"], "-g", str(2 * fps), str(out)]
+        self.ps = [subprocess.Popen(cmd, stdin=subprocess.PIPE)]
+
+
+def ff_stream(M, fps, VW, VH, out_final, out_wa, n, split=False):
+    return (FFSplit if split else FFExact)(M, fps, VW, VH, out_final, out_wa, n)
 
 
 def ff_files(M, fps, VW, VH, frames, lo, hi, out_final, out_wa):
@@ -111,15 +137,14 @@ def worker(wid, jobs, done, M, B, OUT, mode, fast, args, keep=None):
                     a = time.time(); b, pg = open_page(p, page, VW, VH, scale, args, settle); stats["open_s"] += time.time() - a
                     g = Grab(pg, fps, settle, mode, VW, VH, fast); cur = si
                 fo, wo = OUT / f"p_{si:03d}_{lo:06d}_final.mp4", OUT / f"p_{si:03d}_{lo:06d}_wa.mp4"
-                ff = ff_stream(M, fps, VW, VH, fo, wo)
+                ff = ff_stream(M, fps, VW, VH, fo, wo, hi - lo, split=SPLIT)
                 try:
                     for i in range(lo, hi):
-                        data = g(i); ff.stdin.write(data)
+                        data = g(i); ff.write(data)
                         if keep is not None and i in keep: (OUT / f"s_{i:05d}.jpg").write_bytes(data)
-                    ff.stdin.close()
                 except BaseException:
                     ff.kill(); raise
-                if ff.wait() != 0: raise RuntimeError("encode failed")
+                if ff.close() != 0: raise RuntimeError("encode failed")
                 stats["pieces"] += 1; stats["frames"] += hi - lo
                 done.put(("ok", si, lo, hi))
             if b: b.close()
@@ -208,7 +233,7 @@ def bench(M):
     """M["bench"] = {"scene": si, "lo": a, "hi": b, "keep": [frames], "variants": [{name, workers, mode, fast, pieces, extra,
     files}]}. files=True is film.py's exact path (interleaved workers, page.screenshot to jpeg files, two-pass encode).
     Every variant keeps the same sample frames; the report compares them pixel by pixel with the first variant."""
-    global SETTLE_OVERRIDE
+    global SETTLE_OVERRIDE, SPLIT
     Bn = M["bench"]; SETTLE_OVERRIDE = Bn.get("settle")
     si, lo, hi = Bn["scene"], Bn["lo"], Bn["hi"]; keep = set(Bn.get("keep") or [])
     W = TMP / "w"; B = W / "bundle"; R = TMP / "bench"; R.mkdir(parents=True, exist_ok=True)
@@ -218,6 +243,7 @@ def bench(M):
     print(f"bench: {hi - lo} frames, {na} assets in {fetch_s:.0f}s, {os.cpu_count()} cpus", flush=True)
     for v in Bn["variants"]:
         OUT = R / v["name"]; OUT.mkdir()
+        SPLIT = bool(v.get("split"))
         c0, i0 = cpu_now(); t1 = time.time()
         if v.get("files"):   # today's path: film.py shard() inner loop, verbatim settings
             from playwright.sync_api import sync_playwright
@@ -237,11 +263,14 @@ def bench(M):
             ff_files(M, fps, VW, VH, frames, lo, hi, OUT / "final.mp4", OUT / "wa.mp4")
             enc_s = time.time() - t_r
             # encode-chain check: the same jpegs streamed through ff_stream must give the same final piece as film.py's encode
-            ff = ff_stream(M, fps, VW, VH, OUT / "chk_final.mp4", OUT / "chk_wa.mp4")
-            for i in range(lo, hi): ff.stdin.write((frames / f"{i:05d}.jpg").read_bytes())
-            ff.stdin.close(); ff.wait()
-            chain = dict(final_same=framemd5(OUT / "final.mp4") == framemd5(OUT / "chk_final.mp4"),
-                         wa_same=framemd5(OUT / "wa.mp4") == framemd5(OUT / "chk_wa.mp4"))
+            chain = {}
+            for nm, sp in (("exact", False), ("split", True)):
+                ff = ff_stream(M, fps, VW, VH, OUT / "chk_final.mp4", OUT / "chk_wa.mp4", hi - lo, split=sp)
+                for i in range(lo, hi): ff.write((frames / f"{i:05d}.jpg").read_bytes())
+                ff.close()
+                chain[nm] = dict(final_bytes_same=(OUT / "final.mp4").read_bytes() == (OUT / "chk_final.mp4").read_bytes(),
+                                 final_frames_same=framemd5(OUT / "final.mp4") == framemd5(OUT / "chk_final.mp4"),
+                                 wa_frames_same=framemd5(OUT / "wa.mp4") == framemd5(OUT / "chk_wa.mp4"))
             for i in keep:
                 if (frames / f"{i:05d}.jpg").exists(): (OUT / f"s_{i:05d}.jpg").write_bytes((frames / f"{i:05d}.jpg").read_bytes())
             subprocess.run(["rm", "-rf", str(frames)])
