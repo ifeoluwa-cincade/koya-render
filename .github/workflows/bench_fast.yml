@@ -1,0 +1,37 @@
+name: bench_fast
+run-name: bench fast
+
+# Timing + pixel-identity bench for the fast film path (30 Oct 2026). Manual trigger only, so forks never see RENDER_KEY.
+# The job branch holds one encrypted manifest (film.enc) with a "bench" key; assets come from the encrypted cache branch.
+# Logs print counts and timings only; the full report is an encrypted artifact.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  PLAYWRIGHT_VERSION: "1.60.0"
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with: { path: ~/.cache/ms-playwright, key: "pw-${{ env.PLAYWRIGHT_VERSION }}-${{ runner.os }}" }
+      - uses: actions/cache@v4
+        with: { path: ~/ffmpeg, key: "${{ env.FFMPEG_BUILD }}" }
+      - name: tools
+        run: |
+          bash farm/run.sh tools
+          pip install -q numpy
+      - name: bench
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}", GH_TOKEN: "${{ github.token }}" }
+        run: python3 farm/film_fast.py bench
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: bench, path: "${{ runner.temp }}/enc/*.enc", retention-days: 1, compression-level: 0, if-no-files-found: ignore }

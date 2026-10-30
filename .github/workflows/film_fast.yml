@@ -1,0 +1,93 @@
+name: film_fast
+run-name: film fast (${{ inputs.shards }} shards)
+
+# Fast film path (30 Oct 2026, farm/film_fast.py shards; prep and final are film.py, unchanged): prep (asset cache) -> shards (render + encode pieces) -> final (join, mix, mux).
+# Manual trigger only, so forks never see RENDER_KEY. The job branch holds one encrypted manifest (film.enc); assets live
+# encrypted in the `cache` branch; every artifact is encrypted. Logs print counts and timings only.
+on:
+  workflow_dispatch:
+    inputs:
+      shards: { description: "number of render shards", default: "10" }
+
+permissions:
+  contents: write   # prep adds fetched assets to the encrypted cache branch
+  actions: write
+
+env:
+  PLAYWRIGHT_VERSION: "1.60.0"
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"
+
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      matrix: ${{ steps.p.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        name: prep
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}", GH_TOKEN: "${{ github.token }}" }
+        run: python3 farm/film.py prep
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: err-prep, path: "${{ runner.temp }}/enc/*.enc", retention-days: 1, compression-level: 0, if-no-files-found: ignore }
+
+  shard:
+    needs: prep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with: { path: ~/.cache/ms-playwright, key: "pw-${{ env.PLAYWRIGHT_VERSION }}-${{ runner.os }}" }
+      - uses: actions/cache@v4
+        with: { path: ~/ffmpeg, key: "${{ env.FFMPEG_BUILD }}" }
+      - name: tools
+        run: bash farm/run.sh tools
+      - name: render
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}", GH_TOKEN: "${{ github.token }}" }
+        run: python3 farm/film_fast.py shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        with: { name: "piece-${{ matrix.shard }}", path: "${{ runner.temp }}/enc/piece_*.enc", retention-days: 1, compression-level: 0, if-no-files-found: error }
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: "err-shard-${{ matrix.shard }}", path: "${{ runner.temp }}/enc/err_*.enc", retention-days: 1, compression-level: 0, if-no-files-found: ignore }
+
+  final:
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with: { path: ~/ffmpeg, key: "${{ env.FFMPEG_BUILD }}" }
+      - name: tools
+        run: |
+          bash farm/run.sh ffmpeg
+          pip install -q numpy
+      - uses: actions/download-artifact@v4
+        with: { pattern: "piece-*", path: "${{ runner.temp }}/parts", merge-multiple: true }
+      - name: join mix encode
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}", GH_TOKEN: "${{ github.token }}" }
+        run: python3 farm/film.py final
+      - uses: actions/upload-artifact@v4
+        with: { name: final, path: "${{ runner.temp }}/final/final.mp4.enc", retention-days: 3, compression-level: 0 }
+      - uses: actions/upload-artifact@v4
+        with: { name: wa, path: "${{ runner.temp }}/final/wa.mp4.enc", retention-days: 3, compression-level: 0 }
+      - uses: actions/upload-artifact@v4
+        with: { name: report, path: "${{ runner.temp }}/final/report.json.enc", retention-days: 3, compression-level: 0 }
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: err-final, path: "${{ runner.temp }}/enc/err_*.enc", retention-days: 1, compression-level: 0, if-no-files-found: ignore }
+      - name: delete piece artifacts
+        if: success()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          for id in $(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '.artifacts[] | select(.name | startswith("piece-")) | .id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" >/dev/null
+          done
