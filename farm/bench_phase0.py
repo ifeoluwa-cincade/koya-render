@@ -145,7 +145,8 @@ for f in range(1, 91):
 
 # ---------- grease pencil marker scribble (draws on over 0.6 s) ----------
 try:
-    gpd_coll = getattr(bpy.data, "grease_pencils_v3", None) or bpy.data.grease_pencils
+    # GPv3 data lives in grease_pencils_v3 on 4.3-4.5 (an empty collection is falsy, so no "or" here)
+    gpd_coll = bpy.data.grease_pencils_v3 if hasattr(bpy.data, "grease_pencils_v3") else bpy.data.grease_pencils
     gpd = gpd_coll.new("scribble")
     gob = bpy.data.objects.new("scribble", gpd); sc.collection.objects.link(gob)
     gm = bpy.data.materials.new("marker"); bpy.data.materials.create_gpencil_data(gm)

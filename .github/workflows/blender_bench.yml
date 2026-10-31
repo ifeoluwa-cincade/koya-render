@@ -8,6 +8,7 @@ on:
     inputs:
       cycles_samples: { description: "Cycles samples", default: "16" }
       eevee_samples: { description: "EEVEE samples", default: "16" }
+      engines: { description: "JSON list of engines", default: '["cycles","eevee"]' }
 
 permissions:
   contents: read
@@ -22,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        engine: [cycles, eevee]
+        engine: ${{ fromJSON(inputs.engines) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
