@@ -1,0 +1,103 @@
+name: blender_beat
+run-name: blender beat ${{ inputs.ref }}
+
+# Phase 1 (31 Oct 2026): render a Blender beat from a job branch (bundle/scene.py + bundle/tex + bundle/post.py).
+# Public repo: the job branch carries only bundle.tar.gz.enc (RENDER_KEY, same openssl as farm/run.sh); every result
+# is uploaded encrypted. Content is our own licensed assets; never IA material. Logs print counts and timings only.
+on:
+  workflow_dispatch:
+    inputs:
+      ref: { description: "job branch with bundle/", required: true }
+      shards: { description: "parallel shards", default: "10" }
+      frames: { description: "first-last", default: "1-318" }
+      list: { description: "comma frame list (stills mode, overrides frames)", default: "" }
+      samples: { description: "Cycles samples", default: "24" }
+      pct: { description: "resolution percent", default: "100" }
+
+permissions:
+  contents: read
+
+env:
+  BLENDER_VER: "4.5.15"
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      m: ${{ steps.p.outputs.m }}
+    steps:
+      - id: p
+        run: |
+          python3 - <<'PY' >> $GITHUB_OUTPUT
+          import json
+          L = "${{ inputs.list }}"; n = int("${{ inputs.shards }}")
+          if L: fr = [int(x) for x in L.split(",") if x]
+          else:
+              a, b = "${{ inputs.frames }}".split("-"); fr = list(range(int(a), int(b) + 1))
+          n = max(1, min(n, len(fr))); ch = [fr[i::n] for i in range(n)]
+          print("m=" + json.dumps([",".join(map(str, c)) for c in ch]))
+          PY
+  render:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.plan.outputs.m) }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.ref }}" }
+      - uses: actions/cache@v4
+        with: { path: ~/blender, key: "blender-${{ env.BLENDER_VER }}-linux-x64" }
+      - name: tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgl1 libegl1 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 >/dev/null
+          python3 -c "import numpy, PIL" 2>/dev/null || pip install -q numpy pillow
+      - name: unpack
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}" }
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:RENDER_KEY -in bundle.tar.gz.enc -out /tmp/b.tgz
+          tar -xzf /tmp/b.tgz && rm /tmp/b.tgz && ls bundle | wc -l
+          if [ ! -x ~/blender/blender ]; then
+            curl -sSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VER}-linux-x64.tar.xz" -o /tmp/b.tar.xz
+            mkdir -p ~/blender && tar -xf /tmp/b.tar.xz -C ~/blender --strip-components=1
+          fi
+      - name: render
+        run: |
+          ID=$(echo "${{ matrix.part }}" | cut -d, -f1)
+          echo "ID=$ID" >> $GITHUB_ENV
+          T0=$(date +%s)
+          ~/blender/blender -b --factory-startup -P bundle/scene.py -- --out $RUNNER_TEMP/raw --list "${{ matrix.part }}" --samples ${{ inputs.samples }} --pct ${{ inputs.pct }} 2>&1 | grep -E "^frame |^done|Error|error|Traceback|linear:" || true
+          python3 bundle/post.py $RUNNER_TEMP/raw $RUNNER_TEMP/out
+          cp $RUNNER_TEMP/raw/timing.json $RUNNER_TEMP/out/timing_$ID.json
+          echo "wall $(( $(date +%s) - T0 )) s"
+          ls $RUNNER_TEMP/out | wc -l
+      - name: seal
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}" }
+        run: |
+          mkdir -p $RUNNER_TEMP/sealed && tar -czf /tmp/p.tgz -C $RUNNER_TEMP/out .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:RENDER_KEY -in /tmp/p.tgz -out $RUNNER_TEMP/sealed/part_$ID.tgz.enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part_${{ env.ID }}
+          path: ${{ runner.temp }}/sealed
+          retention-days: 1
+  join:
+    needs: render
+    if: ${{ inputs.list == '' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "part_*", path: parts, merge-multiple: true }
+      - env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}" }
+        run: |
+          cd parts && for f in part_*.tgz.enc; do openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:RENDER_KEY -in $f | tar -xz; rm $f; done; cd ..
+          sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null)
+          ls parts/*.jpg | wc -l
+          ffmpeg -v error -y -framerate 30 -start_number 1 -i parts/f_%04d.jpg -c:v libx264 -crf 14 -preset slow -pix_fmt yuv420p -movflags +faststart beat.mp4
+          mkdir -p res && tar -czf /tmp/r.tgz beat.mp4 -C parts $(cd parts && ls timing_*.json)
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:RENDER_KEY -in /tmp/r.tgz -out res/beat.tgz.enc
+      - uses: actions/upload-artifact@v4
+        with: { name: beat, path: res, retention-days: 2 }
