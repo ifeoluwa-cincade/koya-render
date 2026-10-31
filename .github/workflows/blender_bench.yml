@@ -1,0 +1,57 @@
+name: blender_bench
+run-name: blender bench
+
+# Phase 0 Blender bench (31 Oct 2026). Manual trigger only. Synthetic content only (generated
+# textures), so no secrets and no encryption. Renders a 3 s 1080p30 test headless and times each frame.
+on:
+  workflow_dispatch:
+    inputs:
+      cycles_samples: { description: "Cycles samples", default: "16" }
+      eevee_samples: { description: "EEVEE samples", default: "16" }
+
+permissions:
+  contents: read
+
+env:
+  BLENDER_VER: "4.5.15"
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [cycles, eevee]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with: { path: ~/blender, key: "blender-${{ env.BLENDER_VER }}-linux-x64" }
+      - name: tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg xvfb libgl1-mesa-dri libegl1 libgl1 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libxkbcommon-x11-0 >/dev/null
+          if [ ! -x ~/blender/blender ]; then
+            curl -sSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VER}-linux-x64.tar.xz" -o /tmp/b.tar.xz
+            mkdir -p ~/blender && tar -xf /tmp/b.tar.xz -C ~/blender --strip-components=1
+          fi
+          ~/blender/blender -b --version | head -1
+          nproc
+      - name: render
+        run: |
+          S=${{ matrix.engine == 'cycles' && inputs.cycles_samples || inputs.eevee_samples }}
+          OUT=$RUNNER_TEMP/frames; T0=$(date +%s)
+          xvfb-run -a -s "-screen 0 1920x1080x24" ~/blender/blender -b --factory-startup -P farm/bench_phase0.py -- --engine ${{ matrix.engine }} --samples $S --out $OUT 2>&1 | grep -E "^frame |^\{|Error|error|Traceback" || true
+          T1=$(date +%s)
+          test -f $OUT/timing.json
+          ffmpeg -v error -y -framerate 30 -i $OUT/f_%04d.png -c:v libx264 -crf 16 -preset slow -pix_fmt yuv420p -movflags +faststart $RUNNER_TEMP/bench_${{ matrix.engine }}.mp4
+          python3 -c "import json,sys; d=json.load(open('$OUT/timing.json')); d['blender_process_wall_s']=$T1-$T0; json.dump(d,open('$RUNNER_TEMP/timing_${{ matrix.engine }}.json','w'),indent=1)"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender_bench_${{ matrix.engine }}
+          path: |
+            ${{ runner.temp }}/bench_*.mp4
+            ${{ runner.temp }}/timing_*.json
+          retention-days: 1
+          if-no-files-found: ignore
