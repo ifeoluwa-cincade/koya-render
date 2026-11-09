@@ -1,0 +1,58 @@
+name: py_q
+run-name: q ${{ inputs.qid }}
+
+# 9 Nov 2026: generic Python compositor on the work queue (tools/farm_queue.py py_queue). ONE frame range per run.
+# The compositor (our own graphics code, fonts, curves; NO video) arrives as an encrypted bundle on the main farm's job
+# branch (BUNDLE_FROM on the other farms); its run_chunk.sh renders frames [first, first+count) to one x264 piece; only
+# the encrypted piece + meta leave. The Mac checks every piece's frame count, stitches (stream copy) and adds the mix.
+# Manual trigger only: no pull_request triggers, so forks never see RENDER_KEY. Logs print counts and timings only.
+on:
+  workflow_dispatch:
+    inputs:
+      qid: { description: "queue id (run name: the Mac finds this run by it)", required: true }
+      chunk: { description: "chunk index (artifact chunk-<chunk>)", required: true }
+      first: { description: "first frame of the range", required: true }
+      count: { description: "frames in the range", required: true }
+
+permissions:
+  contents: read
+
+env:
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"
+
+jobs:
+  chunk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tools
+        run: bash farm/run.sh py_tools
+      - name: compositor
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          CHUNK: ${{ inputs.chunk }}
+          FIRST: ${{ inputs.first }}
+          COUNT: ${{ inputs.count }}
+        run: bash farm/run.sh py_chunk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ inputs.chunk }}
+          path: ${{ runner.temp }}/enc/chunk_*.tar.enc
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: err-${{ inputs.chunk }}
+          path: ${{ runner.temp }}/enc/err_*.enc
+          retention-days: 1
+          if-no-files-found: ignore
