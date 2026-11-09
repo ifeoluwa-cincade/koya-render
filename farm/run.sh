@@ -145,6 +145,33 @@ print("pieces", sum(len(x["pieces"]) for x in m))
     python3 -c "import json,glob; m=json.load(open(glob.glob('$O/meta_*.json')[0])); print({k: m.get(k) for k in ('lo','hi','board_frames','board_s','board_clip_s','pip_s','wa_s')})"
     tar cf - -C "$O" . | enc -out "$RUNNER_TEMP/enc/chunk_$(printf %03d "$SHARD").tar.enc"
     rm -rf "$W" "$O" "$RUNNER_TEMP/shard.log" ;;
+  pq_tools)
+    # 9 Nov 2026: Priestley Python compositor (numpy + pillow pinned to the Mac's versions so pixels match)
+    pip install -q "numpy==2.4.6" "pillow==12.2.0"
+    ffmpeg_tool ;;
+  pq_chunk)
+    # Owner's own footage only (guarded by the client). One frame range of the Priestley recap; everything that leaves is encrypted.
+    [ -n "${RENDER_KEY:-}" ] || { echo "RENDER_KEY secret is not set"; exit 1; }
+    W="$RUNNER_TEMP/w"; O="$RUNNER_TEMP/out"; mkdir -p "$W" "$O" "$RUNNER_TEMP/enc"
+    if [ -f BUNDLE_FROM ] && ! ls bundle.part_* >/dev/null 2>&1; then
+      read -r BF_URL BF_REF < BUNDLE_FROM
+      git fetch -q --depth 1 "$BF_URL" "$BF_REF" && git checkout -q FETCH_HEAD -- $(git ls-tree --name-only FETCH_HEAD | grep '^bundle\.part_')
+    fi
+    cat bundle.part_* | enc -d | tar xzf - -C "$W"          # compositor code, fonts, still assets, words (no video)
+    if [ -f FOOTAGE_BRANCH ] && ! ls footage.part_* >/dev/null 2>&1; then
+      read -r FB_A FB_B < FOOTAGE_BRANCH
+      if [ -n "${FB_B:-}" ]; then FB_SRC="$FB_A"; FB_REF="$FB_B"; else FB_SRC=origin; FB_REF="$FB_A"; fi
+      git fetch -q --depth 1 "$FB_SRC" "$FB_REF" && git checkout -q FETCH_HEAD -- $(git ls-tree --name-only FETCH_HEAD | grep '^footage\.part_')
+    fi
+    cat footage.part_* | enc -d -out "$W/footage.mp4"
+    if ! (cd "$W/motion/build_recap/priestley_style" && KOYA_SPK="$W/footage.mp4" KOYA_ASSETS="$W/assets_dl" \
+          python3 recap_render.py chunk "$FIRST" "$COUNT" "$O") > "$RUNNER_TEMP/chunk.log" 2>&1; then
+      tail -c 4000 "$RUNNER_TEMP/chunk.log" | enc -out "$RUNNER_TEMP/enc/err_$(printf %03d "$CHUNK").enc"
+      rm -rf "$W" "$O" "$RUNNER_TEMP/chunk.log"; echo "chunk failed"; exit 1
+    fi
+    echo "frames: $(grep -c '^frame ' "$RUNNER_TEMP/chunk.log" || true) progress lines; $(tail -n 1 "$RUNNER_TEMP/chunk.log" | sed 's/[^0-9. a-z()/-]//g')"
+    tar cf - -C "$O" . | enc -out "$RUNNER_TEMP/enc/chunk_$(printf %03d "$CHUNK").tar.enc"
+    rm -rf "$W" "$O" "$RUNNER_TEMP/chunk.log" ;;
   recap_join)
     # stream copy only: the final is pip.py's own encode (as the approved v2 was), the voice+music mix is the Mac's AAC
     [ -n "${RENDER_KEY:-}" ] || { echo "RENDER_KEY secret is not set"; exit 1; }
