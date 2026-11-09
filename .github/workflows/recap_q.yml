@@ -1,0 +1,59 @@
+name: recap_q
+run-name: q ${{ inputs.qid }}
+
+# 9 Nov 2026: work-queue split. ONE chunk of an all-cloud recap per run (one job). The Mac (tools/farm_queue.py via
+# cloud_footage.submit_queue) keeps every farm's queue just full and hands the next chunk to whichever farm has room,
+# so a farm that runs fewer machines does fewer chunks and nothing waits on it. Same steps as recap.yml's shard job
+# (bundle from BUNDLE_FROM, footage from FOOTAGE_BRANCH, everything that leaves encrypted); no join here: the Mac
+# downloads each chunk as it finishes, checks every piece's frame count and stitches (stream copy) + adds the mix.
+# Manual trigger only: no pull_request triggers, so forks never see RENDER_KEY.
+on:
+  workflow_dispatch:
+    inputs:
+      qid: { description: "queue id (run name: the Mac finds this run by it)", required: true }
+      chunk: { description: "chunk index (a block of the cost-balanced plan in the manifest)", required: true }
+      chunks: { description: "number of chunks in the plan", required: true }
+
+permissions:
+  contents: read
+
+env:
+  PLAYWRIGHT_VERSION: "1.60.0"   # same as the Mac, so the same Chromium build
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"
+
+jobs:
+  chunk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ env.PLAYWRIGHT_VERSION }}-${{ runner.os }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+      - name: tools
+        run: bash farm/run.sh recap_tools
+      - name: board + composite
+        env:
+          RENDER_KEY: ${{ secrets.RENDER_KEY }}
+          SHARD: ${{ inputs.chunk }}
+          SHARDS: ${{ inputs.chunks }}
+        run: bash farm/run.sh recap_shard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ inputs.chunk }}
+          path: ${{ runner.temp }}/enc/chunk_*.tar.enc
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: err-${{ inputs.chunk }}
+          path: ${{ runner.temp }}/enc/err_*.enc
+          retention-days: 1
+          if-no-files-found: ignore

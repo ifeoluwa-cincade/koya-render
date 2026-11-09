@@ -1,0 +1,21 @@
+name: queue_test
+run-name: q ${{ inputs.qid }}
+
+# 9 Nov 2026: work-queue test (tools/farm_queue.py test). Each run is one job that only sleeps: the Mac counts how many
+# run at once on each account (its real concurrency cap now). No secrets, no bundle, nothing uploaded.
+on:
+  workflow_dispatch:
+    inputs:
+      qid: { description: "queue id (run name)", required: true }
+      secs: { description: "seconds to sleep", default: "120" }
+
+permissions:
+  contents: read
+
+jobs:
+  sleep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - env: { S: "${{ inputs.secs }}" }
+        run: sleep "$S"

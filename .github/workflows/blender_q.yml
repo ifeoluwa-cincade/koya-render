@@ -1,0 +1,78 @@
+name: blender_q
+run-name: q ${{ inputs.qid }}
+
+# 9 Nov 2026: work-queue split for Blender (tools/farm_queue.py blender_queue). ONE frame list per run (one job, no
+# plan/join jobs). The encrypted bundle is pushed ONCE, to the main farm's job branch; every farm checks it out from
+# there (`src`, a public repo). Same steps as blender_beat.yml's render job; results are sealed with RENDER_KEY.
+# Content is our own licensed assets; logs print counts and timings only.
+on:
+  workflow_dispatch:
+    inputs:
+      qid: { description: "queue id (run name)", required: true }
+      chunk: { description: "chunk index (artifact part_<chunk>)", required: true }
+      src: { description: "repo that holds the job branch (empty = this repo)", default: "" }
+      ref: { description: "job branch with bundle.tar.gz.enc", required: true }
+      list: { description: "comma frame list", required: true }
+      samples: { description: "Cycles samples", default: "24" }
+      pct: { description: "resolution percent", default: "100" }
+      look: { description: "fastlook look (empty = scene default)", default: "" }
+      raw: { description: "1 = also return the raw PNGs (r_f_####.png)", default: "1" }
+
+permissions:
+  contents: read
+
+env:
+  BLENDER_VER: "4.5.15"
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.src || github.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: actions/cache@v4
+        with: { path: ~/blender, key: "blender-${{ env.BLENDER_VER }}-linux-x64" }
+      - name: unpack
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}" }
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:RENDER_KEY -in bundle.tar.gz.enc -out /tmp/b.tgz
+          tar -xzf /tmp/b.tgz && rm /tmp/b.tgz && ls bundle | wc -l
+          if [ ! -x ~/blender/blender ]; then
+            curl -sSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_VER}-linux-x64.tar.xz" -o /tmp/b.tar.xz
+            mkdir -p ~/blender && tar -xf /tmp/b.tar.xz -C ~/blender --strip-components=1
+          fi
+      - name: tools
+        run: |
+          if ~/blender/blender -b --factory-startup --python-expr "import bpy" >/dev/null 2>&1; then echo "apt not needed"; else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libgl1 libegl1 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 >/dev/null
+          fi
+          python3 -c "import numpy, PIL" 2>/dev/null || pip install -q numpy pillow
+      - name: render
+        env: { ID: "${{ inputs.chunk }}", LOOK: "${{ inputs.look }}", LIST: "${{ inputs.list }}", SAMPLES: "${{ inputs.samples }}", PCT: "${{ inputs.pct }}", RAW: "${{ inputs.raw }}" }
+        run: |
+          LA=""; if [ -n "$LOOK" ]; then LA="--look $LOOK"; fi
+          OUT=$RUNNER_TEMP/out; mkdir -p $OUT
+          T0=$(date +%s)
+          ~/blender/blender -b --factory-startup -P bundle/scene.py -- --out $RUNNER_TEMP/raw --list "$LIST" --samples "$SAMPLES" --pct "$PCT" $LA 2>&1 | grep -E "^frame |^done|^fastlook|Error|error|Traceback|linear:" || true
+          T1=$(date +%s)
+          python3 bundle/post.py $RUNNER_TEMP/raw $OUT
+          T2=$(date +%s)
+          python3 -c "import json,sys; d=json.load(open('$RUNNER_TEMP/raw/timing.json')); d['blender_wall_s']=$T1-$T0; d['post_wall_s']=$T2-$T1; json.dump(d,open('$OUT/timing_$ID.json','w'),indent=1)"
+          if [ "$RAW" = "1" ]; then for f in $RUNNER_TEMP/raw/f_*.png; do if [ -e "$f" ]; then cp "$f" "$OUT/r_$(basename $f)"; fi; done; fi
+          # every frame of the list must come out (raw PNG or post.py's output)
+          python3 -c "import os,sys; L=[int(x) for x in os.environ['LIST'].split(',') if x]; o=os.listdir('$OUT'); m=[f for f in L if not any(n.startswith(('f_%04d.' % f, 'r_f_%04d.' % f)) for n in o)]; print('frames out', len(L) - len(m), 'of', len(L)); sys.exit(1 if m else 0)"
+          echo "wall blender $((T1 - T0)) s, post $((T2 - T1)) s"
+      - name: seal
+        env: { RENDER_KEY: "${{ secrets.RENDER_KEY }}", ID: "${{ inputs.chunk }}" }
+        run: |
+          mkdir -p $RUNNER_TEMP/sealed && tar -czf /tmp/p.tgz -C $RUNNER_TEMP/out .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env:RENDER_KEY -in /tmp/p.tgz -out $RUNNER_TEMP/sealed/part_$ID.tgz.enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part_${{ inputs.chunk }}
+          path: ${{ runner.temp }}/sealed
+          retention-days: 1
