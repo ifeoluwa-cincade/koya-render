@@ -172,6 +172,29 @@ print("pieces", sum(len(x["pieces"]) for x in m))
     echo "frames: $(grep -c '^frame ' "$RUNNER_TEMP/chunk.log" || true) progress lines; $(tail -n 1 "$RUNNER_TEMP/chunk.log" | sed 's/[^0-9. a-z()/-]//g')"
     tar cf - -C "$O" . | enc -out "$RUNNER_TEMP/enc/chunk_$(printf %03d "$CHUNK").tar.enc"
     rm -rf "$W" "$O" "$RUNNER_TEMP/chunk.log" ;;
+  py_tools)
+    # 9 Nov 2026: generic Python compositor chunk (no footage): numpy + pillow pinned to the Mac's versions
+    pip install -q "numpy==2.4.6" "pillow==12.2.0"
+    ffmpeg_tool ;;
+  py_chunk)
+    # One frame range of ANY bundled Python compositor (stick figure scenes first). The bundle (our own graphics code,
+    # fonts, curves; NO video) carries run_chunk.sh at its root: run_chunk.sh FIRST COUNT OUT_DIR -> piece + meta.
+    # Everything that leaves is encrypted. Logs print counts and timings only.
+    [ -n "${RENDER_KEY:-}" ] || { echo "RENDER_KEY secret is not set"; exit 1; }
+    W="$RUNNER_TEMP/w"; O="$RUNNER_TEMP/out"; mkdir -p "$W" "$O" "$RUNNER_TEMP/enc"
+    if [ -f BUNDLE_FROM ] && ! ls bundle.part_* >/dev/null 2>&1; then
+      read -r BF_URL BF_REF < BUNDLE_FROM
+      git fetch -q --depth 1 "$BF_URL" "$BF_REF" && git checkout -q FETCH_HEAD -- $(git ls-tree --name-only FETCH_HEAD | grep '^bundle\.part_')
+    fi
+    cat bundle.part_* | enc -d | tar xzf - -C "$W"
+    [ -f "$W/run_chunk.sh" ] || { echo "bundle has no run_chunk.sh"; exit 1; }
+    if ! (cd "$W" && bash run_chunk.sh "$FIRST" "$COUNT" "$O") > "$RUNNER_TEMP/chunk.log" 2>&1; then
+      tail -c 4000 "$RUNNER_TEMP/chunk.log" | enc -out "$RUNNER_TEMP/enc/err_$(printf %03d "$CHUNK").enc"
+      rm -rf "$W" "$O" "$RUNNER_TEMP/chunk.log"; echo "chunk failed"; exit 1
+    fi
+    echo "chunk done: $(ls "$O" | wc -l) files"
+    tar cf - -C "$O" . | enc -out "$RUNNER_TEMP/enc/chunk_$(printf %03d "$CHUNK").tar.enc"
+    rm -rf "$W" "$O" "$RUNNER_TEMP/chunk.log" ;;
   recap_join)
     # stream copy only: the final is pip.py's own encode (as the approved v2 was), the voice+music mix is the Mac's AAC
     [ -n "${RENDER_KEY:-}" ] || { echo "RENDER_KEY secret is not set"; exit 1; }
