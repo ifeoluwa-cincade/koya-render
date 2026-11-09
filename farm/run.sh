@@ -8,8 +8,15 @@ enc() { openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt -pass env
 
 ffmpeg_tool() {
   if [ ! -x "$FF_DIR/bin/ffmpeg" ]; then
-    curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_BUILD}.tar.xz" | tar xJ
-    mv "${FFMPEG_BUILD}" "$FF_DIR"
+    # 9 Nov: BtbN's "latest" asset is briefly missing while it is rebuilt ("xz: File format not recognized" failed
+    # 6 chunks on the new farms). Retry with a pause; same build, same URL.
+    for i in 1 2 3 4 5 6; do
+      rm -rf "${FFMPEG_BUILD}" /tmp/ff.tar.xz
+      if curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_BUILD}.tar.xz" -o /tmp/ff.tar.xz && tar xJf /tmp/ff.tar.xz; then break; fi
+      [ "$i" = 6 ] && { echo "ffmpeg download failed"; exit 1; }
+      echo "ffmpeg download failed, retry $i"; sleep 30
+    done
+    rm -f /tmp/ff.tar.xz; mv "${FFMPEG_BUILD}" "$FF_DIR"
   fi
   echo "$FF_DIR/bin" >> "$GITHUB_PATH"
 }

@@ -1,0 +1,33 @@
+name: tools_cache
+run-name: tools cache (main)
+
+# 9 Nov 2026: fill the Playwright + ffmpeg caches on MAIN. Caches saved on a job branch can only be read by that branch,
+# so on farms that never ran on main every recap chunk downloaded ffmpeg + Chromium again (and BtbN's "latest" asset
+# is sometimes missing). A cache on main is read by every job branch. Dispatch once per farm (on main); each later
+# restore keeps it alive (GitHub evicts caches unused for 7 days).
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PLAYWRIGHT_VERSION: "1.60.0"
+  FFMPEG_BUILD: "ffmpeg-n9.0-latest-linux64-gpl-9.0"
+
+jobs:
+  warm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ env.PLAYWRIGHT_VERSION }}-${{ runner.os }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ${{ env.FFMPEG_BUILD }}
+      - name: tools
+        run: bash farm/run.sh recap_tools
